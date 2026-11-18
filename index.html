@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MP4 音訊工具</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1d2330;--mut:#667085;--line:#e3e6eb;--acc:#2f6fed;--acc2:#e8efff;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1e232b;--fg:#e7eaf0;--mut:#98a2b3;--line:#2e3540;--acc:#6b9bff;--acc2:#24324d;--warn:#f0b35a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif}
+main{max-width:680px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px}
+.sub{color:var(--mut);font-size:13px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{font-size:14px;margin:0 0 8px;color:var(--mut);font-weight:600}
+label.r{display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer}
+.row{display:flex;align-items:center;gap:10px;padding:3px 0}
+.row .n{width:96px;flex:none;font-size:14px}
+.row input[type=range]{flex:1;min-width:0;accent-color:var(--acc)}
+.row .v{width:42px;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
+select,input[type=number]{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:9px 14px;border-radius:9px;cursor:pointer;flex:1;min-width:120px}
+button.p{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+#drop{border:2px dashed var(--line);border-radius:12px;padding:18px;text-align:center;cursor:pointer;color:var(--mut)}
+#drop.over{border-color:var(--acc);background:var(--acc2)}
+#fname{color:var(--fg);font-weight:600;word-break:break-all}
+progress{width:100%;height:10px;accent-color:var(--acc)}
+#status{color:var(--mut);font-size:13px;min-height:20px}
+.note{font-size:12px;color:var(--warn)}
+audio{width:100%;margin-top:8px}
+.dis{color:var(--mut)}
+</style>
+</head>
+<body>
+<main>
+  <h1>MP4 音訊工具</h1>
+  <div class="sub">去人聲・聲場調整・音量放大・輸出 MP4 / MP3 / WAV。全部在你的瀏覽器裡處理，檔案不會上傳。</div>
+
+  <div class="card">
+    <div id="drop">點這裡選擇影片或聲音檔（MP4、MOV、MP3、M4A、WAV…）<br>或把檔案拖進來<div id="fname"></div></div>
+    <input id="file" type="file" accept="video/*,audio/*,.mp4,.mov,.mkv,.m4v,.webm,.mp3,.m4a,.wav,.flac,.aac,.ogg" hidden>
+  </div>
+
+  <div class="card">
+    <h2>背景音處理</h2>
+    <label class="r"><input type="radio" name="sep" value="none" checked> 不處理（只調聲場）</label>
+    <label class="r"><input type="radio" name="sep" value="center_cut"> 快速去人聲（中置消除，適合歌曲）</label>
+    <label class="r dis"><input type="radio" disabled> AI 保留人聲／AI 去人聲 — 需要顯示卡，請用桌面版</label>
+    <label class="r"><input type="checkbox" id="denoise"> 額外降噪（嘶聲、底噪）</label>
+  </div>
+
+  <div class="card">
+    <h2>聲場</h2>
+    <div class="row"><span class="n">預設</span><select id="preset"></select></div>
+    <div id="sliders"></div>
+    <label class="r"><input type="checkbox" id="loudnorm"> 自動響度標準化（整支調到串流平台音量，小聲段落拉大）</label>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="n">試聽起點(秒)</span><input id="pstart" type="number" value="30" min="0" style="width:90px"></div>
+    <div class="btns" style="margin-top:6px">
+      <button id="bPrev">▶ 試聽 15 秒</button>
+    </div>
+    <audio id="player" controls hidden></audio>
+  </div>
+
+  <div class="card">
+    <div class="btns">
+      <button class="p" id="bMp4">輸出 MP4</button>
+      <button id="bMp3">只輸出聲音 MP3</button>
+      <button id="bWav">只輸出聲音 WAV</button>
+    </div>
+    <progress id="pb" max="1" value="0" style="margin-top:12px"></progress>
+    <div id="status">選一個檔案開始。第一次會下載處理引擎（約 30 MB），之後會快取。</div>
+  </div>
+</main>
+
+<script type="module">
+import { FFmpeg } from "./vendor/ffmpeg/index.js";
+import { toBlobURL } from "./vendor/util/index.js";
+
+const PRESETS = {
+  "原始":     {width:100,surround:0, reverb:0, balance:0,bass:0, treble:0, voice:0,volume:0},
+  "寬廣立體聲":{width:170,surround:20,reverb:0, balance:0,bass:1, treble:1, voice:0,volume:0},
+  "虛擬環繞": {width:150,surround:60,reverb:15,balance:0,bass:2, treble:1, voice:0,volume:0},
+  "演唱會廳": {width:140,surround:40,reverb:55,balance:0,bass:3, treble:0, voice:0,volume:0},
+  "小房間":   {width:90, surround:0, reverb:20,balance:0,bass:0, treble:-1,voice:0,volume:0},
+  "人聲清晰": {width:80, surround:0, reverb:0, balance:0,bass:-2,treble:1, voice:5,volume:1},
+  "重低音":   {width:120,surround:10,reverb:0, balance:0,bass:8, treble:1, voice:0,volume:-1},
+  "單聲道":   {width:0,  surround:0, reverb:0, balance:0,bass:0, treble:0, voice:0,volume:0},
+};
+const SPECS = [["width","立體聲寬度 %",0,300],["surround","環繞感",0,100],["reverb","空間殘響",0,100],
+  ["balance","左右平衡",-100,100],["bass","低音 dB",-12,12],["treble","高音 dB",-12,12],
+  ["voice","人聲加強 dB",-6,10],["volume","音量 dB",-12,24]];
+const SUFFIX = {none:"_聲場", center_cut:"_去人聲"};
+
+const $ = id => document.getElementById(id);
+const sl = {};
+for (const [k, label, lo, hi] of SPECS) {
+  const d = document.createElement("div"); d.className = "row";
+  d.innerHTML = `<span class="n">${label}</span><input type="range" min="${lo}" max="${hi}" step="1"><span class="v"></span>`;
+  const r = d.querySelector("input"), v = d.querySelector(".v");
+  r.oninput = () => v.textContent = r.value;
+  sl[k] = {r, v}; $("sliders").appendChild(d);
+}
+for (const n of Object.keys(PRESETS)) $("preset").add(new Option(n, n));
+function applyPreset() { for (const [k, val] of Object.entries(PRESETS[$("preset").value])) { sl[k].r.value = val; sl[k].v.textContent = val; } }
+$("preset").onchange = applyPreset; applyPreset();
+
+function params() {
+  const p = {}; for (const k in sl) p[k] = +sl[k].r.value;
+  p.loudnorm = $("loudnorm").checked; return p;
+}
+const sepMode = () => document.querySelector("input[name=sep]:checked").value;
+
+// 與桌面版 build_filter 相同的濾鏡鏈
+function buildFilter(p, sep, denoise) {
+  const f = [], fx = (x, n) => x.toFixed(n);
+  if (sep === "center_cut")
+    f.push("asplit=2[a][b];[a]pan=stereo|c0=c0-c1|c1=c1-c0[s];" +
+           "[b]lowpass=f=150,pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1[l];" +
+           "[s][l]amix=inputs=2:normalize=0");
+  if (denoise) f.push("afftdn=nf=-25");
+  const w = p.width / 100; if (Math.abs(w - 1) > 1e-3) f.push(`extrastereo=m=${fx(w,2)}:c=0`);
+  const s = p.surround / 100;
+  if (s > 0) f.push(`stereowiden=delay=${fx(8+17*s,1)}:feedback=${fx(.1+.4*s,2)}:crossfeed=${fx(.1+.3*s,2)}:drymix=${fx(1-.3*s,2)}`);
+  const r = p.reverb / 100;
+  if (r > 0) f.push(`aecho=in_gain=0.85:out_gain=0.9:delays=45|83|131|197:decays=${fx(.45*r,2)}|${fx(.33*r,2)}|${fx(.22*r,2)}|${fx(.12*r,2)}`);
+  if (p.balance) f.push(`stereotools=balance_out=${fx(p.balance/100,2)}`);
+  if (p.bass) f.push(`bass=g=${p.bass}:f=100`);
+  if (p.treble) f.push(`treble=g=${p.treble}:f=6000`);
+  if (p.voice) f.push(`equalizer=f=2500:t=o:w=1.5:g=${p.voice}`);
+  if (p.loudnorm) f.push("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=44100");
+  if (p.volume) f.push(`volume=${p.volume}dB`);
+  f.push("alimiter=limit=0.97:level=0");
+  return f.join(",");
+}
+
+// ---------- ffmpeg.wasm ----------
+let ff = null, ffLoading = null, logBuf = [], curFile = null, info = null, busy = false, jobDur = 0;
+const CORE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+function status(t) { $("status").textContent = t; }
+function prog(x) { $("pb").value = Math.max(0, Math.min(1, x)); }
+
+async function getFF() {
+  if (ff) return ff;
+  if (!ffLoading) ffLoading = (async () => {
+    status("下載處理引擎中（約 30 MB，只有第一次）…");
+    const f = new FFmpeg();
+    f.on("log", ({message}) => { logBuf.push(message); if (logBuf.length > 400) logBuf.shift(); });
+    f.on("progress", ({time}) => { if (jobDur > 0 && time > 0) prog(time / 1e6 / jobDur); });
+    await f.load({
+      coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"),
+      wasmURL: await toBlobURL(`${CORE}/ffmpeg-core.wasm`, "application/wasm"),
+    });
+    ff = f; return f;
+  })().catch(e => { ffLoading = null; throw e; });
+  return ffLoading;
+}
+
+async function exec(args) {
+  logBuf = [];
+  const code = await ff.exec(args);
+  if (code !== 0) throw new Error(logBuf.slice(-12).join("\n") || "ffmpeg 失敗");
+}
+
+let mounted = false, inPath = "";
+async function mountInput(file) {
+  if (mounted) { try { await ff.unmount("/in"); } catch {} try { await ff.deleteDir("/in"); } catch {} mounted = false; }
+  if (inPath && !inPath.startsWith("/in/")) { try { await ff.deleteFile(inPath); } catch {} }
+  const ext = (file.name.match(/\.[^.]+$/) || [".bin"])[0];
+  try {
+    await ff.createDir("/in");
+    await ff.mount("WORKERFS", {files: [file]}, "/in");
+    mounted = true; inPath = "/in/" + file.name;
+  } catch {
+    inPath = "input" + ext;
+    await ff.writeFile(inPath, new Uint8Array(await file.arrayBuffer()));
+  }
+}
+
+async function probe() {
+  logBuf = [];
+  await ff.exec(["-hide_banner", "-i", inPath]);  // 沒指定輸出會回非 0，只要 log
+  const log = logBuf.join("\n");
+  const m = log.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+  const dur = m ? (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]) : 0;
+  const vids = log.split("\n").filter(l => /Stream #.*Video:/.test(l));
+  return {dur, hasAudio: /Stream #.*Audio:/.test(log), hasVideo: vids.some(l => !/attached pic/.test(l))};
+}
+
+async function pickFile(file) {
+  if (!file || busy) return;
+  curFile = file; info = null;
+  $("fname").textContent = file.name + `（${(file.size/1048576).toFixed(1)} MB）`;
+  setBusy(true);
+  try {
+    await getFF();
+    status("讀取檔案資訊…");
+    await mountInput(file);
+    info = await probe();
+    if (!info.hasAudio) { status("這個檔案沒有聲音。"); info = null; return; }
+    const mm = Math.floor(info.dur / 60), ss = Math.round(info.dur % 60);
+    status(`${info.hasVideo ? "影片" : "聲音檔"}，長度 ${mm} 分 ${ss} 秒。可以試聽或輸出。`);
+    $("bMp4").title = info.hasVideo ? "" : "聲音檔沒有畫面";
+  } catch (e) { status("失敗：" + e.message); console.error(e); }
+  finally { setBusy(false); }
+}
+
+function setBusy(b) {
+  busy = b;
+  for (const id of ["bPrev", "bMp4", "bMp3", "bWav"]) $(id).disabled = b;
+  if (!b && info && !info.hasVideo) $("bMp4").disabled = true;
+}
+
+function ready() {
+  if (!curFile || !info) { alert("請先選擇影片或聲音檔"); return false; }
+  return true;
+}
+
+async function run(kind) {
+  if (!ready() || busy) return;
+  const p = params(), af = buildFilter(p, sepMode(), $("denoise").checked);
+  let trim = [], out, args, mime;
+  if (kind === "preview") {
+    let st = parseFloat($("pstart").value) || 0;
+    if (st >= info.dur) st = Math.max(0, info.dur - 15);
+    trim = ["-ss", st.toFixed(2), "-t", "15"]; jobDur = Math.min(15, info.dur - st);
+  } else jobDur = info.dur;
+  const graph = ["-filter_complex", `[0:a]${af}[aout]`];
+  if (kind === "mp4") {
+    out = "out.mp4"; mime = "video/mp4";
+    args = ["-i", inPath, ...graph, "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", "-shortest", out];
+  } else if (kind === "mp3") {
+    out = "out.mp3"; mime = "audio/mpeg";
+    args = ["-i", inPath, ...graph, "-map", "[aout]", "-c:a", "libmp3lame", "-b:a", "320k", out];
+  } else {
+    out = kind === "preview" ? "preview.wav" : "out.wav"; mime = "audio/wav";
+    args = [...trim, "-i", inPath, ...graph, "-map", "[aout]", "-c:a", "pcm_s16le", out];
+  }
+  setBusy(true); prog(0);
+  status(kind === "preview" ? "處理試聽片段…" : "處理中…（長片需要一些時間，請不要關閉分頁）");
+  try {
+    await exec(["-y", ...args]);
+    const data = await ff.readFile(out);
+    try { await ff.deleteFile(out); } catch {}
+    const blob = new Blob([data.buffer], {type: mime});
+    prog(1);
+    if (kind === "preview") {
+      const pl = $("player"); if (pl.src) URL.revokeObjectURL(pl.src);
+      pl.src = URL.createObjectURL(blob); pl.hidden = false; pl.play().catch(() => {});
+      status("試聽中…（調整後再按一次試聽即可比較）");
+    } else {
+      const base = curFile.name.replace(/\.[^.]+$/, "");
+      const name = base + SUFFIX[sepMode()] + "." + kind;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      status(`完成：${name}（${(blob.size/1048576).toFixed(1)} MB），已開始下載。`);
+    }
+  } catch (e) { status("失敗：" + e.message.split("\n").slice(-3).join(" ")); console.error(e); }
+  finally { setBusy(false); }
+}
+
+$("drop").onclick = () => $("file").click();
+$("file").onchange = e => pickFile(e.target.files[0]);
+$("drop").ondragover = e => { e.preventDefault(); $("drop").classList.add("over"); };
+$("drop").ondragleave = () => $("drop").classList.remove("over");
+$("drop").ondrop = e => { e.preventDefault(); $("drop").classList.remove("over"); pickFile(e.dataTransfer.files[0]); };
+$("bPrev").onclick = () => run("preview");
+$("bMp4").onclick = () => run("mp4");
+$("bMp3").onclick = () => run("mp3");
+$("bWav").onclick = () => run("wav");
+</script>
+</body>
+</html>
